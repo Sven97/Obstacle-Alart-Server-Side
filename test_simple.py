@@ -6,6 +6,7 @@
 
 from __future__ import absolute_import, division, print_function
 
+import time
 import os
 import sys
 import glob
@@ -104,9 +105,13 @@ def test_simple(args):
 
     print("-> Predicting on {:d} test images".format(len(paths)))
 
+    total_time_begin = time.time();
+
     # PREDICTING ON EACH IMAGE IN TURN
     with torch.no_grad():
         for idx, image_path in enumerate(paths):
+
+            single_time_begin = time.time();
 
             if image_path.endswith("_disp.jpg"):
                 # don't try to predict disparity for a disparity image!
@@ -144,10 +149,18 @@ def test_simple(args):
             name_dest_im = os.path.join(output_directory, "{}_disp.jpeg".format(output_name))
             im.save(name_dest_im)
 
-            print("   Processed {:d} of {:d} images - saved prediction to {}".format(
-                idx + 1, len(paths), name_dest_im))
+            print("   Processed {:d} of {:d} images - saved prediction to {}".format(idx + 1, len(paths), name_dest_im))
+
+            single_time_end = time.time()
+
+            print("   Time for frame #{:d}: {}".format(idx + 1, single_time_end - single_time_begin))
 
     print('-> Done!')
+
+    total_time_end = time.time()
+
+    print('   Total time: {}\n   Average time per frame: {}'.format((total_time_end - total_time_begin),
+                                                                    (total_time_end - total_time_begin) / len(paths)))
 
 
 if __name__ == '__main__':
