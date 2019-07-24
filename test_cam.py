@@ -1,6 +1,7 @@
 from __future__ import absolute_import, division, print_function
 
-import time
+import winsound
+import _thread
 import cv2
 import os
 import numpy as np
@@ -55,51 +56,64 @@ def test_cam():
 
     # Initialize webcam to capture image stream
     # Change the value to 0 when using default camera
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
 
     # PREDICTING ON CAMERA IMAGE STREAM
     with torch.no_grad():
         while cap.isOpened():
-            time_begin = time.time()
             # Capture frame-by-frame
             ret, frame = cap.read()
-            print("Capture time")
-            print(time.time() - time_begin)
 
-            time_begin = time.time()
             # Our operations on the frame come here
             input_image = pil.fromarray(frame).convert('RGB')
             original_width, original_height = input_image.size
             input_image = input_image.resize((feed_width, feed_height), pil.LANCZOS)
             input_image = transforms.ToTensor()(input_image).unsqueeze(0)
-            print("Preprocessing")
-            print(time.time() - time_begin)
 
-            time_begin = time.time()
             # PREDICTION
             input_image = input_image.to(device)
             features = encoder(input_image)
             outputs = depth_decoder(features)
 
             disp = outputs[("disp", 0)]
-            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width), mode="nearest") #, align_corners=False)
-            print("Prediction")
-            print(time.time() - time_begin)
+            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width),
+                                                           mode="nearest")  # , align_corners=False)
 
-            time_begin = time.time()
             # Saving numpy file
-            scaled_disp, _ = disp_to_depth(disp_resized, 0.1, 100)
-            # Compute depth
-            pred_depth = 5.4 / scaled_disp
+            scaled_disp, pred_depth = disp_to_depth(disp_resized, 0.1, 100)
+            # Compute depth: depth = baseline * focal / disparity
+            # pred_depth = 0.54 * 721 / (640 * scaled_disp)
             pred_depth_np = pred_depth.squeeze().cpu().detach().numpy()
-            print("Compute depth")
-            print(time.time() - time_begin)
 
-            time_begin = time.time()
+            depth_map = np.zeros([3, 4])
+            for i in range(len(depth_map)):
+                for j in range(len(depth_map[0])):
+                    depth_map[i][j] = get_avg_depth(pred_depth_np, 160 * i, 160 * j, 160 * i + 160,
+                                                    160 * j + 160)
+
+            if (depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1 or depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1):
+                if (depth_map[1, 1] <= 1 and depth_map[1, 2] <= 1):
+                    print("Dangerous!!! AHEAD")
+                else:
+                    if (depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1):
+                        print("Dangerous!!! LEFT")
+                    if (depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1):
+                        print("Dangerous!!! RIGHT")
+            elif (np.sum(depth_map[0:2, 2:3]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7):
+                if (np.sum(depth_map[0:2, 0:1]) <= 7):
+                    print("Careful!! LEFT")
+                if (np.sum(depth_map[0:2, 2:3]) <= 7):
+                    print("Careful!! RIGHT")
+            else:
+                print("Clear")
+
+            # print(depth_map)
+
             # Display colormapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-            vmax = np.percentile(disp_resized_np, 95)
-            normalizer = mpl.colors.Normalize(vmin=disp_resized_np.min(), vmax=vmax)
+            # vmax = np.percentile(disp_resized_np, 95)
+            # normalizer = mpl.colors.Normalize(vmin=disp_resized_np.min(), vmax=vmax)
+            normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
             mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
             colormapped_im = (mapper.to_rgba(disp_resized_np)[:, :, :3] * 255).astype(np.uint8)
             im = pil.fromarray(colormapped_im)
@@ -108,14 +122,11 @@ def test_cam():
             # Display the resulting frame
             cv2.imshow('Result', result_img)
             cv2.imshow('Original', frame)
-
-            # Blend images
+            # Display the blended image
             alpha = 0.2
             beta = 1.0 - alpha
             blended_result = cv2.addWeighted(frame, alpha, result_img, beta, 0.0)
             cv2.imshow('Blended Result', blended_result)
-            print("Display")
-            print(time.time() - time_begin)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 print('-> Done!')
@@ -124,6 +135,12 @@ def test_cam():
     # When everything done, release the capture
     cap.release()
     cv2.destroyAllWindows()
+
+
+# TODO: Trim the box
+def get_avg_depth(depth, left, top, right, bottom):
+    box = depth[left:(right + 1), top:(bottom + 1)]
+    return np.mean(box)
 
 
 if __name__ == '__main__':
