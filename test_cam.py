@@ -1,7 +1,7 @@
 from __future__ import absolute_import, division, print_function
 
-import winsound
-import _thread
+import time
+
 import cv2
 import os
 import numpy as np
@@ -21,8 +21,10 @@ def test_cam():
     """Function to predict for a camera image stream
     """
 
-    # Can be changed to cpu if no cuda
-    device = torch.device("cuda")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
 
     download_model_if_doesnt_exist("mono+stereo_640x192")
     model_path = os.path.join("models", "mono+stereo_640x192")
@@ -35,7 +37,7 @@ def test_cam():
     encoder = networks.ResnetEncoder(18, False)
     loaded_dict_enc = torch.load(encoder_path, map_location=device)
 
-    # extract the height and width of image that this model was trained with
+    # Extract the height and width of image that this model was trained with
     feed_height = loaded_dict_enc['height']
     feed_width = loaded_dict_enc['width']
     filtered_dict_enc = {k: v for k, v in loaded_dict_enc.items() if k in encoder.state_dict()}
@@ -45,24 +47,38 @@ def test_cam():
 
     print("   Loading pretrained decoder")
     depth_decoder = networks.DepthDecoder(num_ch_enc=encoder.num_ch_enc, scales=range(4))
-
     loaded_dict = torch.load(depth_decoder_path, map_location=device)
     depth_decoder.load_state_dict(loaded_dict)
-
     depth_decoder.to(device)
     depth_decoder.eval()
 
-    print("-> Prediction is initialized")
+    print("-> Loading complete, initializing the camera")
 
-    # Initialize webcam to capture image stream
+    # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
     cap = cv2.VideoCapture(1)
 
-    # PREDICTING ON CAMERA IMAGE STREAM
+    # Number of frames to capture to calculate fps
+    num_frame = 20
+    cur_frame = 0
+    fps = 0
     with torch.no_grad():
         while cap.isOpened():
             # Capture frame-by-frame
             ret, frame = cap.read()
+
+            # Calculate the fps
+            if cur_frame == 0:
+                start = time.time()
+                cur_frame = cur_frame + 1
+            elif cur_frame == num_frame:
+                end = time.time()
+                seconds = end - start
+                fps = num_frame / seconds
+                cur_frame = 0
+            else:
+                cur_frame = cur_frame + 1
+
 
             # Our operations on the frame come here
             input_image = pil.fromarray(frame).convert('RGB')
@@ -79,38 +95,38 @@ def test_cam():
             disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width),
                                                            mode="nearest")  # , align_corners=False)
 
-            # Saving numpy file
+            # Get the predict depth
             scaled_disp, pred_depth = disp_to_depth(disp_resized, 0.1, 100)
-            # Compute depth: depth = baseline * focal / disparity
-            # pred_depth = 0.54 * 721 / (640 * scaled_disp)
             pred_depth_np = pred_depth.squeeze().cpu().detach().numpy()
 
+            # Initialize a 3x4 depth map
             depth_map = np.zeros([3, 4])
             for i in range(len(depth_map)):
                 for j in range(len(depth_map[0])):
-                    depth_map[i][j] = get_avg_depth(pred_depth_np, 160 * i, 160 * j, 160 * i + 160,
-                                                    160 * j + 160)
+                    # Cut and store the average value of depth information of 640x480 to 3x4
+                    depth_map[i][j] = get_avg_depth(pred_depth_np, 160 * i, 160 * j, 160 * i + 160, 160 * j + 160)
 
-            if (depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1 or depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1):
-                if (depth_map[1, 1] <= 1 and depth_map[1, 2] <= 1):
+            # Giving a simple decision logic
+            if depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1 or depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1:
+                if depth_map[1, 1] <= 1 and depth_map[1, 2] <= 1:
                     print("Dangerous!!! AHEAD")
                 else:
-                    if (depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1):
+                    if depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1:
                         print("Dangerous!!! LEFT")
-                    if (depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1):
+                    if depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1:
                         print("Dangerous!!! RIGHT")
-            elif (np.sum(depth_map[0:2, 2:3]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7):
-                if (np.sum(depth_map[0:2, 0:1]) <= 7):
+            elif np.sum(depth_map[0:2, 2:3]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7:
+                if np.sum(depth_map[0:2, 0:1]) <= 7:
                     print("Careful!! LEFT")
-                if (np.sum(depth_map[0:2, 2:3]) <= 7):
+                if np.sum(depth_map[0:2, 2:3]) <= 7:
                     print("Careful!! RIGHT")
             else:
                 print("Clear")
 
-            # print(depth_map)
-
-            # Display colormapped depth image
+            # DISPLAY
+            # Generate color-mapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
+            # Fixed value convert the relative disparity to constant depth map
             # vmax = np.percentile(disp_resized_np, 95)
             # normalizer = mpl.colors.Normalize(vmin=disp_resized_np.min(), vmax=vmax)
             normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
@@ -119,13 +135,17 @@ def test_cam():
             im = pil.fromarray(colormapped_im)
             result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
 
-            # Display the resulting frame
-            cv2.imshow('Result', result_img)
-            cv2.imshow('Original', frame)
-            # Display the blended image
+            # Blended the original frame and result frame
             alpha = 0.2
             beta = 1.0 - alpha
             blended_result = cv2.addWeighted(frame, alpha, result_img, beta, 0.0)
+
+            # Put fps to the blend result
+            cv2.putText(blended_result, str(fps), (30, 30), cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255))
+
+            # Display the result in three windows
+            cv2.imshow('Result', result_img)
+            cv2.imshow('Original', frame)
             cv2.imshow('Blended Result', blended_result)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -139,6 +159,9 @@ def test_cam():
 
 # TODO: Trim the box
 def get_avg_depth(depth, left, top, right, bottom):
+    """Function to get average depth of a bounding boxed area from a depth map (2D numpy array)
+    """
+
     box = depth[left:(right + 1), top:(bottom + 1)]
     return np.mean(box)
 
