@@ -8,6 +8,7 @@ import numpy as np
 import PIL.Image as pil
 import matplotlib as mpl
 import matplotlib.cm as cm
+from multiprocessing import Pipe, Process
 
 import torch
 from torchvision import transforms, datasets
@@ -15,6 +16,37 @@ from torchvision import transforms, datasets
 import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
+
+
+def display_image(conn):
+    while(True):
+        try:
+            original_frame, disparity_np_arr, fps = conn.recv()
+        except EOFError:
+            break
+
+        normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
+        mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+        colormapped_im = (mapper.to_rgba(disparity_np_arr)[:, :, :3] * 255).astype(np.uint8)
+        im = pil.fromarray(colormapped_im)
+        result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
+
+        # Blended the original frame and result frame
+        alpha = 0.2
+        beta = 1.0 - alpha
+        blended_result = cv2.addWeighted(original_frame, alpha, result_img, beta, 0.0)
+
+        # Put fps to the blend result
+        cv2.putText(blended_result, str(fps), (30, 30), cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255))
+
+        # Display the result in three windows
+        cv2.imshow('Result', result_img)
+        cv2.imshow('Original', original_frame)
+        cv2.imshow('Blended Result', blended_result)
+        #conn.send("Displayed, awaiting next image")
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print('-> Done!')
+            break
 
 
 def test_cam():
@@ -54,31 +86,26 @@ def test_cam():
 
     print("-> Loading complete, initializing the camera")
 
+    parent_conn, child_conn = Pipe()
+    p = Process(target=display_image, args=(child_conn,))
+    p.start()
+
     # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(2)
 
     # Number of frames to capture to calculate fps
-    num_frame = 20
-    cur_frame = 0
-    fps = 0
+    num_frames = 5
+    curr_time = np.zeros(num_frames)
     with torch.no_grad():
         while cap.isOpened():
             # Capture frame-by-frame
             ret, frame = cap.read()
 
             # Calculate the fps
-            if cur_frame == 0:
-                start = time.time()
-                cur_frame = cur_frame + 1
-            elif cur_frame == num_frame:
-                end = time.time()
-                seconds = end - start
-                fps = num_frame / seconds
-                cur_frame = 0
-            else:
-                cur_frame = cur_frame + 1
-
+            curr_time[1:] = curr_time[:-1]
+            curr_time[0] = time.time()
+            fps = num_frames / (curr_time[0] - curr_time[len(curr_time) - 1])
 
             # Our operations on the frame come here
             input_image = pil.fromarray(frame).convert('RGB')
@@ -126,31 +153,11 @@ def test_cam():
             # DISPLAY
             # Generate color-mapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-            # Fixed value convert the relative disparity to constant depth map
-            # vmax = np.percentile(disp_resized_np, 95)
-            # normalizer = mpl.colors.Normalize(vmin=disp_resized_np.min(), vmax=vmax)
-            normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
-            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-            colormapped_im = (mapper.to_rgba(disp_resized_np)[:, :, :3] * 255).astype(np.uint8)
-            im = pil.fromarray(colormapped_im)
-            result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
+            parent_conn.send((frame, disp_resized_np, fps))
 
-            # Blended the original frame and result frame
-            alpha = 0.2
-            beta = 1.0 - alpha
-            blended_result = cv2.addWeighted(frame, alpha, result_img, beta, 0.0)
-
-            # Put fps to the blend result
-            cv2.putText(blended_result, str(fps), (30, 30), cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255))
-
-            # Display the result in three windows
-            cv2.imshow('Result', result_img)
-            cv2.imshow('Original', frame)
-            cv2.imshow('Blended Result', blended_result)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print('-> Done!')
-                break
+            #if cv2.waitKey(1) & 0xFF == ord('q'):
+            #    print('-> Done!')
+            #    break
 
     # When everything done, release the capture
     cap.release()
