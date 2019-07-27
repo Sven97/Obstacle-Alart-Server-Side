@@ -6,9 +6,9 @@ import cv2
 import os
 import numpy as np
 import PIL.Image as pil
-import matplotlib as mpl
-import matplotlib.cm as cm
-from multiprocessing import Pipe, Process
+from webcam import WebcamVideoStream
+from display import DisplayImage
+import statistics
 
 import torch
 from torchvision import transforms, datasets
@@ -16,37 +16,6 @@ from torchvision import transforms, datasets
 import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
-
-
-def display_image(conn):
-    while(True):
-        try:
-            original_frame, disparity_np_arr, fps = conn.recv()
-        except EOFError:
-            break
-
-        normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
-        mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-        colormapped_im = (mapper.to_rgba(disparity_np_arr)[:, :, :3] * 255).astype(np.uint8)
-        im = pil.fromarray(colormapped_im)
-        result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
-
-        # Blended the original frame and result frame
-        alpha = 0.2
-        beta = 1.0 - alpha
-        blended_result = cv2.addWeighted(original_frame, alpha, result_img, beta, 0.0)
-
-        # Put fps to the blend result
-        cv2.putText(blended_result, str(fps), (30, 30), cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255))
-
-        # Display the result in three windows
-        cv2.imshow('Result', result_img)
-        cv2.imshow('Original', original_frame)
-        cv2.imshow('Blended Result', blended_result)
-        #conn.send("Displayed, awaiting next image")
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print('-> Done!')
-            break
 
 
 def test_cam():
@@ -86,21 +55,20 @@ def test_cam():
 
     print("-> Loading complete, initializing the camera")
 
-    parent_conn, child_conn = Pipe()
-    p = Process(target=display_image, args=(child_conn,))
-    p.start()
-
     # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
-    cap = cv2.VideoCapture(2)
+    video_stream = WebcamVideoStream(src=0).start()
+
+    # Object to display images
+    image_display = DisplayImage()
 
     # Number of frames to capture to calculate fps
     num_frames = 5
     curr_time = np.zeros(num_frames)
     with torch.no_grad():
-        while cap.isOpened():
+        while True:
             # Capture frame-by-frame
-            ret, frame = cap.read()
+            frame = video_stream.read()
 
             # Calculate the fps
             curr_time[1:] = curr_time[:-1]
@@ -119,8 +87,7 @@ def test_cam():
             outputs = depth_decoder(features)
 
             disp = outputs[("disp", 0)]
-            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width),
-                                                           mode="nearest")  # , align_corners=False)
+            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width), mode="nearest")
 
             # Get the predict depth
             scaled_disp, pred_depth = disp_to_depth(disp_resized, 0.1, 100)
@@ -130,7 +97,7 @@ def test_cam():
             depth_map = np.zeros([3, 4])
             for i in range(len(depth_map)):
                 for j in range(len(depth_map[0])):
-                    # Cut and store the average value of depth information of 640x480 to 3x4
+                    # Cut and store the average value of depth information of 640x480 into 3x4 grid
                     depth_map[i][j] = get_avg_depth(pred_depth_np, 160 * i, 160 * j, 160 * i + 160, 160 * j + 160)
 
             # Giving a simple decision logic
@@ -153,15 +120,15 @@ def test_cam():
             # DISPLAY
             # Generate color-mapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-            parent_conn.send((frame, disp_resized_np, fps))
+            image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=True)
 
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #    print('-> Done!')
-            #    break
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print('-> Done!')
+                break
 
-    # When everything done, release the capture
-    cap.release()
-    cv2.destroyAllWindows()
+    # When everything is done, stop camera stream and close windows
+    video_stream.stop()
+    image_display.close()
 
 
 # TODO: Trim the box
