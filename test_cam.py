@@ -4,6 +4,7 @@ import time
 
 import cv2
 import os
+import argparse
 import numpy as np
 import PIL.Image as pil
 from webcam import WebcamVideoStream
@@ -18,17 +19,47 @@ from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
 
 
-def test_cam():
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Simple testing function for Monodepthv2 models.')
+
+    parser.add_argument('--model_name', type=str,
+                        help='name of a pretrained model to use',
+                        choices=[
+                            "mono_640x192",
+                            "stereo_640x192",
+                            "mono+stereo_640x192",
+                            "mono_no_pt_640x192",
+                            "stereo_no_pt_640x192",
+                            "mono+stereo_no_pt_640x192",
+                            "mono_1024x320",
+                            "stereo_1024x320",
+                            "mono+stereo_1024x320"])
+    parser.add_argument("--no_cuda",
+                        help='if set, disables CUDA',
+                        action='store_true')
+    parser.add_argument('--webcam',
+                        help='integer corresponding to desired webcam, default is 0')
+
+    return parser.parse_args()
+
+
+def test_cam(args):
     """Function to predict for a camera image stream
     """
 
-    if torch.cuda.is_available():
+    model_name = args.model_name if args.model_name is not None else "mono+stereo_640x192"
+    no_cuda = args.no_cuda if args.no_cuda is not None else False
+    webcam = args.webcam if int(args.webcam) else 0
+    print(webcam)
+
+    if torch.cuda.is_available() and not no_cuda:
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
-    download_model_if_doesnt_exist("mono+stereo_640x192")
-    model_path = os.path.join("models", "mono+stereo_640x192")
+    download_model_if_doesnt_exist(model_name)
+    model_path = os.path.join("models", model_name)
     print("-> Loading model from ", model_path)
     encoder_path = os.path.join(model_path, "encoder.pth")
     depth_decoder_path = os.path.join(model_path, "depth.pth")
@@ -57,7 +88,7 @@ def test_cam():
 
     # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
-    video_stream = WebcamVideoStream(src=0).start()
+    video_stream = WebcamVideoStream(src=webcam).start()
 
     # Object to display images
     image_display = DisplayImage()
@@ -121,6 +152,7 @@ def test_cam():
             # Generate color-mapped depth image
             disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
             image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=True)
+            print(str(fps))
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 print('-> Done!')
@@ -141,4 +173,5 @@ def get_avg_depth(depth, left, top, right, bottom):
 
 
 if __name__ == '__main__':
-    test_cam()
+    args = parse_args()
+    test_cam(args)
