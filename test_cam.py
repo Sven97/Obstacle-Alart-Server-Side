@@ -23,7 +23,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Simple testing function for Monodepthv2 models.')
 
-    parser.add_argument('--model_name', type=str,
+    parser.add_argument('--model_name', type=str, default="mono+stereo_640x192",
                         help='name of a pretrained model to use',
                         choices=[
                             "mono_640x192",
@@ -38,8 +38,11 @@ def parse_args():
     parser.add_argument("--no_cuda",
                         help='if set, disables CUDA',
                         action='store_true')
-    parser.add_argument('--webcam',
+    parser.add_argument('--webcam', type=int, default=0,
                         help='integer corresponding to desired webcam, default is 0')
+    parser.add_argument('--no_display',
+                        help='if set, does not display results',
+                        action='store_true')
 
     return parser.parse_args()
 
@@ -48,18 +51,13 @@ def test_cam(args):
     """Function to predict for a camera image stream
     """
 
-    model_name = args.model_name if args.model_name is not None else "mono+stereo_640x192"
-    no_cuda = args.no_cuda if args.no_cuda is not None else False
-    webcam = args.webcam if int(args.webcam) else 0
-    print(webcam)
-
-    if torch.cuda.is_available() and not no_cuda:
+    if torch.cuda.is_available() and not args.no_cuda:
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
-    download_model_if_doesnt_exist(model_name)
-    model_path = os.path.join("models", model_name)
+    download_model_if_doesnt_exist(args.model_name)
+    model_path = os.path.join("models", args.model_name)
     print("-> Loading model from ", model_path)
     encoder_path = os.path.join(model_path, "encoder.pth")
     depth_decoder_path = os.path.join(model_path, "depth.pth")
@@ -88,10 +86,11 @@ def test_cam(args):
 
     # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
-    video_stream = WebcamVideoStream(src=webcam).start()
+    video_stream = WebcamVideoStream(src=args.webcam).start()
 
-    # Object to display images
-    image_display = DisplayImage()
+    if not args.no_display:
+        # Object to display images
+        image_display = DisplayImage()
 
     # Number of frames to capture to calculate fps
     num_frames = 5
@@ -148,11 +147,13 @@ def test_cam(args):
             else:
                 print("Clear")
 
-            # DISPLAY
-            # Generate color-mapped depth image
-            disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-            image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=True)
-            print(str(fps))
+            if not args.no_display:
+                # DISPLAY
+                # Generate color-mapped depth image
+                disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
+                image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=True)
+            else:
+                print(f"FPS: {fps}")
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 print('-> Done!')
