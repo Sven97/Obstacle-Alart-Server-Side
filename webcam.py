@@ -30,7 +30,7 @@ class WebcamVideoStream:
         return self.frame
 
     def stop(self):
-        print("Stopping stream")
+        print("-> Stopping stream")
 
         # Indicate thread should be stopped
         self.stopped = True

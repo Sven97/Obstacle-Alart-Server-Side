@@ -4,12 +4,11 @@ import time
 
 import cv2
 import os
+import sys
 import argparse
 import numpy as np
 import PIL.Image as pil
-from webcam import WebcamVideoStream
-from display import DisplayImage
-import statistics
+from pynput import keyboard
 
 import torch
 from torchvision import transforms, datasets
@@ -18,10 +17,13 @@ import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
 
+from webcam import WebcamVideoStream
+from display import DisplayImage
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Simple testing function for Monodepthv2 models.')
+        description='Uses monodepthv2 on webcam')
 
     parser.add_argument('--model_name', type=str, default="mono+stereo_640x192",
                         help='name of a pretrained model to use',
@@ -40,8 +42,14 @@ def parse_args():
                         action='store_true')
     parser.add_argument('--webcam', type=int, default=0,
                         help='integer corresponding to desired webcam, default is 0')
+    parser.add_argument('--no_process',
+                        help='if set, displays image in current process, might improve performance on machines without a GPU',
+                        action='store_true')
+    parser.add_argument('--no_blend',
+                        help='if set, does not display blended image',
+                        action='store_true')
     parser.add_argument('--no_display',
-                        help='if set, does not display results',
+                        help='if set, does not display images, only prints fps',
                         action='store_true')
 
     return parser.parse_args()
@@ -90,7 +98,17 @@ def test_cam(args):
 
     if not args.no_display:
         # Object to display images
-        image_display = DisplayImage()
+        image_display = DisplayImage(not args.no_process)
+
+    # Flag that records when 'q' is pressed to break out of inference loop below
+    quit_inference = False
+    def on_release(key):
+        if key == keyboard.KeyCode.from_char('q'):
+            nonlocal quit_inference
+            quit_inference = True
+            return False
+
+    keyboard.Listener(on_release=on_release).start()
 
     # Number of frames to capture to calculate fps
     num_frames = 5
@@ -151,17 +169,17 @@ def test_cam(args):
                 # DISPLAY
                 # Generate color-mapped depth image
                 disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-                image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=True)
+                image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=not args.no_blend)
             else:
                 print(f"FPS: {fps}")
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print('-> Done!')
+            if quit_inference:
+                if args.no_display:
+                    print('-> Done')
                 break
 
-    # When everything is done, stop camera stream and close windows
+    # When everything is done, stop camera stream
     video_stream.stop()
-    image_display.close()
 
 
 # TODO: Trim the box

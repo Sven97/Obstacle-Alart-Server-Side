@@ -3,18 +3,43 @@ import PIL.Image as pil
 import matplotlib as mpl
 import matplotlib.cm as cm
 from screeninfo import get_monitors
+from multiprocessing import Process, Pipe
 import cv2
 
 
 class DisplayImage:
-    def __init__(self):
+    def __init__(self, process):
         self.normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
         self.mapper = cm.ScalarMappable(norm=self.normalizer, cmap='magma')
         self.alpha = 0.2
         self.beta = 1 - self.alpha
         self.screen_size = get_monitors()[0]  # Assumes displaying on first monitor available
+        self.process = process
+        if self.process:
+            child_conn, self.parent_conn = Pipe()
+            Process(target=self.show_image_in_separate_process, args=(child_conn,)).start()
 
-    def display(self, original_img, disparity, fps, original_width, original_height, blended=False):
+    def display(self, original_img, disparity, fps, original_width, original_height, blended):
+        if self.process:
+            try:
+                self.parent_conn.send((original_img, disparity, fps, original_width, original_height, blended))
+            except:
+                pass
+        else:
+            self.show_image(original_img, disparity, fps, original_width, original_height, blended)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.close()
+
+    def show_image_in_separate_process(self, conn):
+        while True:
+            original_img, disparity, fps, original_width, original_height, blended = conn.recv()
+            self.show_image(original_img, disparity, fps, original_width, original_height, blended)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.close()
+                break
+
+    def show_image(self, original_img, disparity, fps, original_width, original_height, blended):
+        # Format disparity image
         colormapped_im = (self.mapper.to_rgba(disparity)[:, :, :3] * 255).astype(np.uint8)
         im = pil.fromarray(colormapped_im)
         result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
@@ -39,5 +64,6 @@ class DisplayImage:
         cv2.imshow('Results', all_images)
 
     def close(self):
-        print("Closing windows")
+        print('-> Done')
+        print('   Closing windows')
         cv2.destroyAllWindows()
