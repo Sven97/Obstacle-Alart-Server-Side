@@ -4,11 +4,11 @@ import time
 
 import cv2
 import os
+import sys
+import argparse
 import numpy as np
 import PIL.Image as pil
-import matplotlib as mpl
-import matplotlib.cm as cm
-from multiprocessing import Pipe, Process
+from pynput import keyboard
 
 import torch
 from torchvision import transforms, datasets
@@ -17,49 +17,55 @@ import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
 
-
-def display_image(conn):
-    while(True):
-        try:
-            original_frame, disparity_np_arr, fps = conn.recv()
-        except EOFError:
-            break
-
-        normalizer = mpl.colors.Normalize(vmin=0, vmax=0.5)
-        mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-        colormapped_im = (mapper.to_rgba(disparity_np_arr)[:, :, :3] * 255).astype(np.uint8)
-        im = pil.fromarray(colormapped_im)
-        result_img = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
-
-        # Blended the original frame and result frame
-        alpha = 0.2
-        beta = 1.0 - alpha
-        blended_result = cv2.addWeighted(original_frame, alpha, result_img, beta, 0.0)
-
-        # Put fps to the blend result
-        cv2.putText(blended_result, str(fps), (30, 30), cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255))
-
-        # Display the result in three windows
-        cv2.imshow('Result', result_img)
-        cv2.imshow('Original', original_frame)
-        cv2.imshow('Blended Result', blended_result)
-        #conn.send("Displayed, awaiting next image")
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print('-> Done!')
-            break
+from webcam import WebcamVideoStream
+from display import DisplayImage
 
 
-def test_cam():
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Uses monodepthv2 on webcam')
+
+    parser.add_argument('--model_name', type=str, default="mono+stereo_640x192",
+                        help='name of a pretrained model to use',
+                        choices=[
+                            "mono_640x192",
+                            "stereo_640x192",
+                            "mono+stereo_640x192",
+                            "mono_no_pt_640x192",
+                            "stereo_no_pt_640x192",
+                            "mono+stereo_no_pt_640x192",
+                            "mono_1024x320",
+                            "stereo_1024x320",
+                            "mono+stereo_1024x320"])
+    parser.add_argument("--no_cuda",
+                        help='if set, disables CUDA',
+                        action='store_true')
+    parser.add_argument('--webcam', type=int, default=0,
+                        help='integer corresponding to desired webcam, default is 0')
+    parser.add_argument('--no_process',
+                        help='if set, displays image in current process, might improve performance on machines without a GPU',
+                        action='store_true')
+    parser.add_argument('--no_blend',
+                        help='if set, does not display blended image',
+                        action='store_true')
+    parser.add_argument('--no_display',
+                        help='if set, does not display images, only prints fps',
+                        action='store_true')
+
+    return parser.parse_args()
+
+
+def test_cam(args):
     """Function to predict for a camera image stream
     """
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and not args.no_cuda:
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
-    download_model_if_doesnt_exist("mono+stereo_640x192")
-    model_path = os.path.join("models", "mono+stereo_640x192")
+    download_model_if_doesnt_exist(args.model_name)
+    model_path = os.path.join("models", args.model_name)
     print("-> Loading model from ", model_path)
     encoder_path = os.path.join(model_path, "encoder.pth")
     depth_decoder_path = os.path.join(model_path, "depth.pth")
@@ -86,21 +92,36 @@ def test_cam():
 
     print("-> Loading complete, initializing the camera")
 
-    parent_conn, child_conn = Pipe()
-    p = Process(target=display_image, args=(child_conn,))
-    p.start()
-
     # Initialize camera to capture image stream
     # Change the value to 0 when using default camera
-    cap = cv2.VideoCapture(2)
+    video_stream = WebcamVideoStream(src=args.webcam).start()
+
+    if not args.no_display:
+        # Object to display images
+        image_display = DisplayImage(not args.no_process)
+
+    # Flag that records when 'q' is pressed to break out of inference loop below
+    quit_inference = False
+    def on_release(key):
+        if key == keyboard.KeyCode.from_char('q'):
+            nonlocal quit_inference
+            quit_inference = True
+            return False
+
+    keyboard.Listener(on_release=on_release).start()
 
     # Number of frames to capture to calculate fps
     num_frames = 5
     curr_time = np.zeros(num_frames)
     with torch.no_grad():
-        while cap.isOpened():
+        while True:
+            if quit_inference:
+                if args.no_display:
+                    print('-> Done')
+                break
+
             # Capture frame-by-frame
-            ret, frame = cap.read()
+            frame = video_stream.read()
 
             # Calculate the fps
             curr_time[1:] = curr_time[:-1]
@@ -119,8 +140,7 @@ def test_cam():
             outputs = depth_decoder(features)
 
             disp = outputs[("disp", 0)]
-            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width),
-                                                           mode="nearest")  # , align_corners=False)
+            disp_resized = torch.nn.functional.interpolate(disp, (original_height, original_width), mode="nearest")
 
             # Get the predict depth
             scaled_disp, pred_depth = disp_to_depth(disp_resized, 0.1, 100)
@@ -130,7 +150,7 @@ def test_cam():
             depth_map = np.zeros([3, 4])
             for i in range(len(depth_map)):
                 for j in range(len(depth_map[0])):
-                    # Cut and store the average value of depth information of 640x480 to 3x4
+                    # Cut and store the average value of depth information of 640x480 into 3x4 grid
                     depth_map[i][j] = get_avg_depth(pred_depth_np, 160 * i, 160 * j, 160 * i + 160, 160 * j + 160)
 
             # Giving a simple decision logic
@@ -150,18 +170,21 @@ def test_cam():
             else:
                 print("Clear")
 
-            # DISPLAY
-            # Generate color-mapped depth image
-            disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-            parent_conn.send((frame, disp_resized_np, fps))
+            if not args.no_display:
+                # DISPLAY
+                # Generate color-mapped depth image
+                disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
+                image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=not args.no_blend)
+            else:
+                print(f"FPS: {fps}")
 
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #    print('-> Done!')
+            #if quit_inference:
+            #    if args.no_display:
+            #        print('-> Done')
             #    break
 
-    # When everything done, release the capture
-    cap.release()
-    cv2.destroyAllWindows()
+    # When everything is done, stop camera stream
+    video_stream.stop()
 
 
 # TODO: Trim the box
@@ -174,4 +197,5 @@ def get_avg_depth(depth, left, top, right, bottom):
 
 
 if __name__ == '__main__':
-    test_cam()
+    args = parse_args()
+    test_cam(args)
