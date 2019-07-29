@@ -115,6 +115,11 @@ def test_cam(args):
     curr_time = np.zeros(num_frames)
     with torch.no_grad():
         while True:
+            if quit_inference:
+                if args.no_display:
+                    print('-> Done')
+                break
+
             # Capture frame-by-frame
             frame = video_stream.read()
 
@@ -173,10 +178,10 @@ def test_cam(args):
             else:
                 print(f"FPS: {fps}")
 
-            if quit_inference:
-                if args.no_display:
-                    print('-> Done')
-                break
+            #if quit_inference:
+            #    if args.no_display:
+            #        print('-> Done')
+            #    break
 
     # When everything is done, stop camera stream
     video_stream.stop()
