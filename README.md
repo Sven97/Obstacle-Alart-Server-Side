@@ -33,6 +33,7 @@ python test_cam.py
 
 ```shell
 # The arguments can be added to run the above command is listed below
+
 --model_name
 # default="mono+stereo_640x192"
 # choices=["mono_640x192",
@@ -44,15 +45,20 @@ python test_cam.py
 # "mono_1024x320",
 # "stereo_1024x320",
 # "mono+stereo_1024x320"]
+
 --no_cuda
 # if set, disables CUDA
+
 --webcam
 # default=0
 # change to the desired by changing the value
+
 --no_process
 # if set, displays image in current process, might improve performance on machines without a GPU
+
 --no_blend
 # if set, does not display blended image
+
 --no_display
 # if set, does not display images, only prints fps
 ```
