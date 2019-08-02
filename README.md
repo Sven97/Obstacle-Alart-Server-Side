@@ -10,7 +10,7 @@ Based on the original version of [Monodepth2](https://github.com/nianticlabs/mon
 
 You can refer to the [README]() from the original project to setup the required environment or just quickly go through the following steps:
 
-Assuming a fresh [Anaconda](https://www.anaconda.com/download/) distribution, you can install the dependencies with:
+Assuming a fresh [Anaconda](https://www.anaconda.com/download/) distribution, you can install the dependencies with: 
 
 ```shell
 conda install pytorch=0.4.1 torchvision=0.2.1 -c pytorch
