@@ -1,24 +1,20 @@
 from __future__ import absolute_import, division, print_function
 
+import argparse
+import os
 import time
 
-import cv2
-import os
-import sys
-import argparse
-import numpy as np
 import PIL.Image as pil
-from pynput import keyboard
-
+import numpy as np
 import torch
-from torchvision import transforms, datasets
+from pynput import keyboard
+from torchvision import transforms
 
 import networks
+from display import DisplayImage
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
-
 from webcam import WebcamVideoStream
-from display import DisplayImage
 
 
 def parse_args():
@@ -102,6 +98,7 @@ def test_cam(args):
 
     # Flag that records when 'q' is pressed to break out of inference loop below
     quit_inference = False
+
     def on_release(key):
         if key == keyboard.KeyCode.from_char('q'):
             nonlocal quit_inference
@@ -174,11 +171,12 @@ def test_cam(args):
                 # DISPLAY
                 # Generate color-mapped depth image
                 disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-                image_display.display(frame, disp_resized_np, fps, original_width, original_height, blended=not args.no_blend)
+                image_display.display(frame, disp_resized_np, fps, original_width, original_height,
+                                      blended=not args.no_blend)
             else:
                 print(f"FPS: {fps}")
 
-            #if quit_inference:
+            # if quit_inference:
             #    if args.no_display:
             #        print('-> Done')
             #    break
