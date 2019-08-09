@@ -6,11 +6,8 @@
 
 from __future__ import absolute_import, division, print_function
 
-import numpy as np
-import torch
-import torch.nn as nn
-
 from collections import OrderedDict
+
 from layers import *
 
 
@@ -62,4 +59,4 @@ class DepthDecoder(nn.Module):
             if i in self.scales:
                 self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
 
-        return self.outputs
+        return self.outputs[("disp", 0)]
