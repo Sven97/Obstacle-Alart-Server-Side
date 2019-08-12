@@ -338,18 +338,16 @@ def test_cam(args):
                 if danger_level > 0:
                     detections = detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs, bindings,
                                                 stream, context, COCO_LABELS)
-                    # Construct string with danger level and END signal
-                    # Separate each piece (i.e. danger level, each detection, END) with new line so client socket knows
-                    # where each item ends
                     detections_str = '\n' + '\n'.join('$'.join(map(str, obj)) for obj in detections)
                     print(f"Detections: {detections_str}")
 
-                # Send result to client socket
+                # Construct string with danger level and END signal
+                # Separate each piece (i.e. danger level, each detection, END) with new line so client socket knows
+                # where each item ends
+                # Get confirmation from client before moving on to receiving next image
                 result = str(danger_level) + detections_str + "\nEND\n"
                 print("Sending results")
                 conn.send(result.encode())
-
-                # Get confirmation from client before moving on to receiving next image
                 print("Waiting for confirmation...")
                 confirmation = conn.recv(32).decode('utf-8')
 
