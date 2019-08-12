@@ -344,10 +344,13 @@ def test_cam(args):
                 # Construct string with danger level and END signal
                 # Separate each piece (i.e. danger level, each detection, END) with new line so client socket knows
                 # where each item ends
-                # Get confirmation from client before moving on to receiving next image
                 result = str(danger_level) + detections_str + "\nEND\n"
+
+                # Send results to client socket
                 print("Sending results")
                 conn.send(result.encode())
+
+                # Get confirmation from client socket before moving on to receiving next image
                 print("Waiting for confirmation...")
                 confirmation = conn.recv(32).decode('utf-8')
 
