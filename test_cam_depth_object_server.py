@@ -59,6 +59,15 @@ def parse_args():
     return parser.parse_args()
 
 
+# TODO: Trim the box
+def get_avg_depth(depth, left, top, right, bottom):
+    """Function to get average depth of a bounding boxed area from a depth map (2D numpy array)
+    """
+
+    box = depth[left:(right + 1), top:(bottom + 1)]
+    return np.mean(box)
+
+
 def predict_depth(image, input_width, input_height, device, encoder, decoder):
     # Our operations on the frame come here
     input_image = pil.fromarray(image).convert('RGB')
@@ -82,9 +91,10 @@ def predict_depth(image, input_width, input_height, device, encoder, decoder):
     depth_map = np.zeros([3, 4])
     grid_width = original_width // 4
     grid_height = original_height // 3
+    # TODO: I think i and j should be exchanged or flip grid_width and grid_height (right now it's separating into 4x3 grid)
     for i in range(len(depth_map)):
         for j in range(len(depth_map[0])):
-            # Cut and store the average value of depth information of 640x480 into 3x4 grid
+            # Cut and store the average value of depth information from original image dimensions into 3x4 grid
             depth_map[i][j] = get_avg_depth(pred_depth_np,
                                             grid_width * i,
                                             grid_height * j,
@@ -96,25 +106,31 @@ def predict_depth(image, input_width, input_height, device, encoder, decoder):
         if depth_map[1, 1] <= 1 and depth_map[1, 2] <= 1:
             print("Dangerous!!! AHEAD")
             danger_level = 2
+            danger_side = "AHEAD"
         else:
             if depth_map[0, 1] <= 1 or depth_map[1, 1] <= 1:
                 print("Dangerous!!! LEFT")
                 danger_level = 2
+                danger_side = "LEFT"
             if depth_map[0, 2] <= 1 or depth_map[1, 2] <= 1:
                 print("Dangerous!!! RIGHT")
                 danger_level = 2
+                danger_side = "RIGHT"
     elif np.sum(depth_map[0:2, 2:3]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7:
         if np.sum(depth_map[0:2, 0:1]) <= 7:
             print("Careful!! LEFT")
             danger_level = 1
+            danger_side = "LEFT"
         if np.sum(depth_map[0:2, 2:3]) <= 7:
             print("Careful!! RIGHT")
             danger_level = 1
+            danger_side = "RIGHT"
     else:
         print("Clear")
         danger_level = 0
+        danger_side = "NONE" # Don't use it in this case
 
-    return disp_resized, danger_level, original_width, original_height
+    return disp_resized, danger_level, danger_side, original_width, original_height
 
 
 def detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs, bindings, stream, context, label_dict):
@@ -160,7 +176,22 @@ def detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs, 
             cv2.putText(frame, label_dict[label], (xmin+10, ymin+10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2,
                         cv2.LINE_AA)
 
-    return detections
+    # TODO: Test this out
+    # Separate detections into LEFT, AHEAD, and RIGHT and put in dictionary
+    detections_dict = {"LEFT": [], "AHEAD": [], "RIGHT": []}
+    grid_width = width // 4
+
+    # Note: Detections will fall into two of these categories
+    for detection in detections:
+        if detection[2] < grid_width * 2:
+            detections_dict["LEFT"].append(detection)
+        if (detection[2] >= grid_width) and (detection[2] <= grid_width * 3):
+            detections_dict["AHEAD"].append(detection)
+        if detection[2] > grid_width * 2:
+            detections_dict["RIGHT"].append(detection)
+
+    return detections_dict
+    # return detections
 
 
 def test_cam(args):
@@ -290,7 +321,6 @@ def test_cam(args):
         print(f"Connected by: {addr}")
 
         with torch.no_grad():
-            # TODO: Probably need to do some error catching in here
             while True:
                 if quit_inference:
                     if args.no_display:
@@ -301,6 +331,11 @@ def test_cam(args):
                 image_size = int.from_bytes(conn.recv(4), byteorder="big")
                 print(f"\nReceived size: {image_size}")
 
+                # Stop if connection was closed on client side
+                if image_size == 0:
+                    print("Connection closed, stopping")
+                    break  # TODO: Look into potentially making server try to regain connection with client socket
+
                 # Send back size that was received to confirm that it is correct
                 conn.send(image_size.to_bytes(4, byteorder="big"))
 
@@ -308,7 +343,14 @@ def test_cam(args):
                 total_data = []
                 while len(total_data) < image_size:
                     data = conn.recv(1024)
+
+                    # Stop if connection was closed on client side
+                    if data == 0:
+                        print("Connection closed, stopping")
+                        break
+
                     total_data.extend(data)
+
                 print("Received image bytes")
 
                 # Send confirmation that image was received back to client
@@ -328,16 +370,19 @@ def test_cam(args):
                 fps = num_frames / (curr_time[0] - curr_time[len(curr_time) - 1])
 
                 # Do depth inference
-                disp_resized, danger_level, original_width, original_height = predict_depth(frame, feed_width,
-                                                                                            feed_height, device,
-                                                                                            encoder, depth_decoder)
+                disp_resized, danger_level, danger_side, original_width, original_height = predict_depth(frame,
+                                                                                            feed_width, feed_height,
+                                                                                            device, encoder,
+                                                                                            depth_decoder)
 
                 # Only do object detection if danger level is above 0 (i.e. Careful or Dangerous)
                 print(f"Danger level: {danger_level}")
                 detections_str = ""
                 if danger_level > 0:
-                    detections = detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs, bindings,
-                                                stream, context, COCO_LABELS)
+                    detections_dict = detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs,
+                                                     bindings, stream, context, COCO_LABELS)
+                    # Only sending back detections in region where depth seems close
+                    detections = detections_dict[danger_side]
                     detections_str = '\n' + '\n'.join('$'.join(map(str, obj)) for obj in detections)
                     print(f"Detections: {detections_str}")
 
@@ -352,12 +397,19 @@ def test_cam(args):
 
                 # Get confirmation from client socket before moving on to receiving next image
                 print("Waiting for confirmation...")
-                confirmation = conn.recv(32).decode('utf-8')
+                confirmation = conn.recv(32)
+
+                # Stop if connection was closed on client side
+                if confirmation == 0:
+                    print("Connection closed, stopping")
+                    break
+
+                confirmation = confirmation.decode('utf-8')
 
                 # If confirmation is not "OK", break since connection is corrupted somehow
                 if confirmation != "OK":
                     print("Confirmation incorrect, stopping")
-                    break  # TODO: Look into potentially making server try to regain connection with client socket
+                    break
 
                 print(f"Confirmation: {confirmation}")
 
@@ -369,15 +421,6 @@ def test_cam(args):
                     cv2.waitKey(1)
                 else:
                     print(f"FPS: {fps}")
-
-
-# TODO: Trim the box
-def get_avg_depth(depth, left, top, right, bottom):
-    """Function to get average depth of a bounding boxed area from a depth map (2D numpy array)
-    """
-
-    box = depth[left:(right + 1), top:(bottom + 1)]
-    return np.mean(box)
 
 
 if __name__ == '__main__':
