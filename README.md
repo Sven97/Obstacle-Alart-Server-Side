@@ -31,6 +31,12 @@ Or you can predict depth using image stream with a webcam:
 python test_cam.py
 ```
 
+Run server-side code for object avoidance system with:
+
+```shell
+python test_cam_depth_object_server.py
+```
+
 ```shell
 # The arguments can be added to run the above command is listed below
 
