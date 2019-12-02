@@ -25,11 +25,13 @@ import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
 from display import DisplayImage
+from imagestream import ImageStreamThread
+from socketstatus import SocketStatusThread
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Uses monodepthv2 on webcam')
+        description='Uses monodepthv2 on image stream')
 
     parser.add_argument('--model_name', type=str, default="mono+stereo_640x192",
                         help='name of a pretrained model to use',
@@ -116,15 +118,19 @@ def predict_depth(image, input_width, input_height, device, encoder, decoder):
                 print("Dangerous!!! RIGHT")
                 danger_level = 2
                 danger_side = "RIGHT"
-    elif np.sum(depth_map[0:2, 2:3]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7:
+    elif np.sum(depth_map[0:2, 0:1]) <= 7 or np.sum(depth_map[0:2, 2:3]) <= 7:
         if np.sum(depth_map[0:2, 0:1]) <= 7:
             print("Careful!! LEFT")
             danger_level = 1
             danger_side = "LEFT"
-        if np.sum(depth_map[0:2, 2:3]) <= 7:
+        elif np.sum(depth_map[0:2, 2:3]) <= 7:
             print("Careful!! RIGHT")
             danger_level = 1
             danger_side = "RIGHT"
+        else:
+            print("Careful!! BOTH")
+            danger_level = 1
+            danger_side = "BOTH SIDES"
     else:
         print("Clear")
         danger_level = 0
@@ -190,8 +196,8 @@ def detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs, 
         if detection[2] > grid_width * 2:
             detections_dict["RIGHT"].append(detection)
 
-    return detections_dict
-    # return detections
+    # return detections_dict
+    return detections
 
 
 def test_cam(args):
@@ -263,6 +269,7 @@ def test_cam(args):
 
     # create engine
     with open(model.TRTbin, 'rb') as f:
+
         buf = f.read()
         engine = runtime.deserialize_cuda_engine(buf)
 
@@ -305,122 +312,66 @@ def test_cam(args):
     # Initialize listener
     keyboard.Listener(on_release=on_release).start()
 
+    status_socket_thread = SocketStatusThread()
+    status_socket_thread.start()
+
+    image_stream_thread = ImageStreamThread()
+    image_stream_thread.start()
+
     # Number of frames to capture to calculate fps
     num_frames = 5
     curr_time = np.zeros(num_frames)
 
-    # Initialize and bind socket
-    with socket.socket() as s:
-        print("Socket created")
-        s.bind(("", 9002))
-        s.listen(5)
-        print("Socket binded to port 9002 and listening")
+    with torch.no_grad():
+        while True:
+            if quit_inference:
+                if args.no_display:
+                    image_stream_thread.stop()
+                    print('-> Done')
+                break
+            frame = image_stream_thread.read_frame()
 
-        # Wait for client socket to connect
-        conn, addr = s.accept()
-        print(f"Connected by: {addr}")
+            # Calculate the fps
+            curr_time[1:] = curr_time[:-1]
+            curr_time[0] = time.time()
+            fps = num_frames / (curr_time[0] - curr_time[len(curr_time) - 1])
 
-        with torch.no_grad():
-            while True:
-                if quit_inference:
-                    if args.no_display:
-                        print('-> Done')
-                    break
+            # Do depth inference
+            disp_resized, danger_level, danger_side, original_width, original_height = predict_depth(frame,
+                                                                                        feed_width, feed_height,
+                                                                                        device, encoder,
+                                                                                        depth_decoder)
 
-                # Receive size from client and convert to integer
-                image_size = int.from_bytes(conn.recv(4), byteorder="big")
-                print(f"\nReceived size: {image_size}")
+            # Only do object detection if danger level is above 0 (i.e. Careful or Dangerous)
+            print(f"Danger level: {danger_level}")
+            detections_str = ""
+            if danger_level > 0:
+                detections = detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs,
+                                                 bindings, stream, context, COCO_LABELS)
+                # Only sending back detections in region where depth seems close
+                # detections = detections_dict[danger_side]
+                detections_str = '\n' + '\n'.join('$'.join(map(str, obj)) for obj in detections)
+                print(str(detections))
+                print(f"Detections: {detections_str}")
 
-                # Stop if connection was closed on client side
-                if image_size == 0:
-                    print("Connection closed, stopping")
-                    break  # TODO: Look into potentially making server try to regain connection with client socket
+            # Construct string with danger level and END signal
+            # Separate each piece (i.e. danger level, each detection, END) with new line so client socket knows
+            # where each item ends
+            result = str(danger_level) + "\n" + danger_side + detections_str + "\nEND\n"
+            print("Sending result...")
+            image_stream_thread.send_result(result)
 
-                # Send back size that was received to confirm that it is correct
-                conn.send(image_size.to_bytes(4, byteorder="big"))
+            if not args.no_display:
+                # Generate color-mapped depth image and display alongside original frame and blended, if chosen
+                disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
+                image_display.display(frame, disp_resized_np, fps, original_width, original_height,
+                                      blended=not args.no_blend)
+                cv2.waitKey(1)
+            else:
+                print(f"FPS: {fps}")
 
-                # Keep reading from connection until enough bytes have been read to reach the image size
-                total_data = []
-                while len(total_data) < image_size:
-                    data = conn.recv(1024)
-
-                    # Stop if connection was closed on client side
-                    if data == 0:
-                        print("Connection closed, stopping")
-                        break
-
-                    total_data.extend(data)
-
-                print("Received image bytes")
-
-                # Send confirmation that image was received back to client
-                ok = "OK\n"
-                conn.send(ok.encode('utf-8'))
-
-                # Convert bytes to bytearray, then to numpy array, then to cv2 matrix for image
-                total_data = bytearray(total_data)
-                total_data = np.asarray(total_data)
-                frame = cv2.imdecode(total_data, cv2.IMREAD_COLOR)
-                print("Decoded frame from bytes, printed below:")
-                print(frame)
-
-                # Calculate the fps
-                curr_time[1:] = curr_time[:-1]
-                curr_time[0] = time.time()
-                fps = num_frames / (curr_time[0] - curr_time[len(curr_time) - 1])
-
-                # Do depth inference
-                disp_resized, danger_level, danger_side, original_width, original_height = predict_depth(frame,
-                                                                                            feed_width, feed_height,
-                                                                                            device, encoder,
-                                                                                            depth_decoder)
-
-                # Only do object detection if danger level is above 0 (i.e. Careful or Dangerous)
-                print(f"Danger level: {danger_level}")
-                detections_str = ""
-                if danger_level > 0:
-                    detections_dict = detect_objects(frame, host_inputs, host_outputs, cuda_inputs, cuda_outputs,
-                                                     bindings, stream, context, COCO_LABELS)
-                    # Only sending back detections in region where depth seems close
-                    detections = detections_dict[danger_side]
-                    detections_str = '\n' + '\n'.join('$'.join(map(str, obj)) for obj in detections)
-                    print(f"Detections: {detections_str}")
-
-                # Construct string with danger level and END signal
-                # Separate each piece (i.e. danger level, each detection, END) with new line so client socket knows
-                # where each item ends
-                result = str(danger_level) + detections_str + "\nEND\n"
-
-                # Send results to client socket
-                print("Sending results")
-                conn.send(result.encode())
-
-                # Get confirmation from client socket before moving on to receiving next image
-                print("Waiting for confirmation...")
-                confirmation = conn.recv(32)
-
-                # Stop if connection was closed on client side
-                if confirmation == 0:
-                    print("Connection closed, stopping")
-                    break
-
-                confirmation = confirmation.decode('utf-8')
-
-                # If confirmation is not "OK", break since connection is corrupted somehow
-                if confirmation != "OK":
-                    print("Confirmation incorrect, stopping")
-                    break
-
-                print(f"Confirmation: {confirmation}")
-
-                if not args.no_display:
-                    # Generate color-mapped depth image and display alongside original frame and blended, if chosen
-                    disp_resized_np = disp_resized.squeeze().cpu().detach().numpy()
-                    image_display.display(frame, disp_resized_np, fps, original_width, original_height,
-                                          blended=not args.no_blend)
-                    cv2.waitKey(1)
-                else:
-                    print(f"FPS: {fps}")
+    print("Outside of with statement")
+    image_stream_thread.stop()
 
 
 if __name__ == '__main__':
