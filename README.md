@@ -1,4 +1,8 @@
-# Monodepth2
+# Obstacle-Alart-Server-Side
+
+Vanderbilt University research project.
+
+This repository contains the server-side code base. See [here](https://github.com/arjunkeerthi/Sony-SmartEyeGlass-Navigation-App) for client-side (Android mobile device) code.
 
 Based on the original version of [Monodepth2](https://github.com/nianticlabs/monodepth2), We added the ***test_cam.py*** to test Monodepth2 on image stream using a webcam.
 
